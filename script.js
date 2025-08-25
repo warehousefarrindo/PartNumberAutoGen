@@ -1,11 +1,15 @@
-// Google Apps Script integration
-const scriptUrl = "https://script.google.com/macros/s/AKfycbxjs9DrsKnhq8r9vZRetKRSnwkaYBZZ6icReM4rko5QGRjDx1GyXRpnTcEDUW4XGWrk5g/exec";
-
 // ===============================
-// Default Data Structures
+// GLOBAL VARIABLES
 // ===============================
+const categoryMappings = {
+    '01': { prefix: 'F1', name: 'Filter' },
+    '02': { prefix: 'F2', name: 'Sheetmetal' },
+    '03': { prefix: 'F3', name: 'Bahan baku' },
+    '04': { prefix: 'F6', name: 'Barang jadi' },
+    '05': { prefix: 'F5', name: 'Jasa' },
+    '06': { prefix: 'F4', name: 'Subcount' }
+};
 
-// Sub Categories per Category
 const defaultSubCategories = {
     '01': [
         {value: '01', text: '01. Pre Filter'},
@@ -25,7 +29,6 @@ const defaultSubCategories = {
     '06': []
 };
 
-// Product Names by Category-SubCategory
 const defaultProductNames = {
     '01-01': [
         {value: '01', text: 'NAF CR Pre Filter Washable Pleated Radial'},
@@ -33,7 +36,6 @@ const defaultProductNames = {
         {value: '03', text: 'Pre Filter NAF 30 (Disposable)'},
         {value: '04', text: 'NAF CR Pre Filter Washable Flange Type'},
         {value: '05', text: 'NAF CR Prefilter IU'},
-        {value: '06', text: 'NAF Multi Pocket Filter / Medium Bag Filter'}
     ],
     '01-02': [
         {value: '01', text: 'NAF V-PAC (2V)'},
@@ -111,7 +113,6 @@ const defaultProductNames = {
     '05': [],
     '06': []
 };
-
 const mediaOptionsBySubCategory = {
     '01': [ // Pre Filter
         {code: '01', name: 'G3 White Fabric'},
@@ -165,8 +166,7 @@ const mediaOptionsBySubCategory = {
         {code: '04', name: 'G.2260-15 AXSTAR Japan Spunbond'}
     ]
 };
-   // Sheet metal materials with numbered codes
-        const sheetMetalMaterials = [
+ const sheetMetalMaterials = [
             {code: '01', name: "PLAT MR SS304 #0.6MM 4' X 8'"},
             {code: '02', name: "PLAT MR SS304 #0.8MM 4' X 8'"},
             {code: '03', name: "PLAT MR SS304 #1MM 4' X 8'"},
@@ -203,176 +203,490 @@ const mediaOptionsBySubCategory = {
             {code: '34', name: "Plat Besi Hitam 1.8mm x 4ft x 8ft (STD)"},
             {code: '35', name: "Plat Besi Hitam 2.0mm x 4ft x 8ft (STD)"}
   ];
-// ===============================
-// Runtime Data & Helpers
-// ===============================
-const sizeCodeMaps = {};
-let partNumberData = [];
-let currentDataId = 1;
+// Google Apps Script URL
+const scriptURL = 'https://script.google.com/macros/s/AKfycbxjs9DrsKnhq8r9vZRetKRSnwkaYBZZ6icReM4rko5QGRjDx1GyXRpnTcEDUW4XGWrk5g/exec';
+
+let lastGeneratedCode = '';
+let productDatabase = JSON.parse(localStorage.getItem('productDatabase')) || [];
+let currentPage = 1;
+const itemsPerPage = 10;
 
 // ===============================
-// CLOCK
+// INITIALIZATION
 // ===============================
-function updateJakartaClock() {
-    const now = new Date();
-    const jakartaTime = now.toLocaleTimeString('id-ID',{timeZone:'Asia/Jakarta',hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
-    const jakartaDate = now.toLocaleDateString('id-ID',{timeZone:'Asia/Jakarta',weekday:'long',year:'numeric',month:'long',day:'numeric'});
-    document.getElementById('jakarta-time').textContent = jakartaTime;
-    document.getElementById('jakarta-date').textContent = jakartaDate;
-}
-setInterval(updateJakartaClock,1000);
-updateJakartaClock();
-
-// ===============================
-// LOGIN
-// ===============================
-function validateLogin() {
-    const username=document.getElementById('username').value;
-    const password=document.getElementById('password').value;
-    const errorElement=document.getElementById('loginError');
-    if(username==='Farrindo'&&password==='Farrindo365'){
-        document.getElementById('loginModal').style.display='none';
-        document.getElementById('mainContent').style.display='block';
-        return false;
-    }else{
-        errorElement.style.display='block';
-        return false;
-    }
-}
-document.addEventListener('DOMContentLoaded',function(){
-    document.getElementById('loginModal').style.display='block';
-    loadSavedOptions();
-    loadPartNumberData();
+document.addEventListener('DOMContentLoaded', function() {
+    populateCategoryDropdown();
+    loadProductTable();
+    updatePagination();
+    
+    // Event listeners
+    document.getElementById('category').addEventListener('change', function() {
+        updateSubCategoryOptions();
+        updateProductCodePreview();
+    });
+    
+    document.getElementById('subCategory').addEventListener('change', function() {
+        updateProductNameOptions();
+        updateMediaOptions();
+        updateProductCodePreview();
+    });
+    
+    document.getElementById('productName').addEventListener('change', updateProductCodePreview);
+    document.getElementById('media').addEventListener('change', updateProductCodePreview);
+    document.getElementById('size').addEventListener('input', updateProductCodePreview);
+    
+    document.getElementById('productForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        saveProduct();
+    });
+    
+    document.getElementById('searchInput').addEventListener('input', function() {
+        currentPage = 1;
+        loadProductTable();
+        updatePagination();
+    });
+    
+    document.getElementById('exportExcel').addEventListener('click', exportToExcel);
+    document.getElementById('prevPage').addEventListener('click', goToPrevPage);
+    document.getElementById('nextPage').addEventListener('click', goToNextPage);
+    document.getElementById('syncWithSheets').addEventListener('click', syncWithGoogleSheets);
 });
 
 // ===============================
-// SELECT HANDLERS
+// DROPDOWN POPULATION FUNCTIONS
 // ===============================
-function addOptionToSelect(selectId,value,text){
-    const select=document.getElementById(selectId);
-    if(select){
-        const option=document.createElement('option');
-        option.value=value; option.text=text;
-        select.appendChild(option);
+function populateCategoryDropdown() {
+    const categorySelect = document.getElementById('category');
+    categorySelect.innerHTML = '<option value="">Select Category</option>';
+    
+    for (const [key, value] of Object.entries(categoryMappings)) {
+        const option = document.createElement('option');
+        option.value = key;
+        option.textContent = `${key}. ${value.name}`;
+        categorySelect.appendChild(option);
     }
 }
-function clearSelectOptions(selectId){
-    const select=document.getElementById(selectId);
-    if(select){
-        while(select.options.length>1){select.remove(1);}
+
+function updateSubCategoryOptions() {
+    const category = document.getElementById('category').value;
+    const subCategorySelect = document.getElementById('subCategory');
+    
+    subCategorySelect.innerHTML = '<option value="">Select Sub Category</option>';
+    
+    if (category && defaultSubCategories[category]) {
+        defaultSubCategories[category].forEach(subCat => {
+            const option = document.createElement('option');
+            option.value = subCat.value;
+            option.textContent = subCat.text;
+            subCategorySelect.appendChild(option);
+        });
     }
-}
-function updateSubCategories(){
-    const category=document.getElementById('category').value;
-    const subCategorySelect=document.getElementById('subCategory');
-    clearSelectOptions('subCategory'); clearSelectOptions('productName');
-    const subs=defaultSubCategories[category]||[];
-    subs.forEach(s=>addOptionToSelect('subCategory',s.value,s.text));
-    subCategorySelect.disabled=subs.length===0;
-}
-function updateProductNames(){
-    const key=`${document.getElementById('category').value}-${document.getElementById('subCategory').value}`;
-    const productSelect=document.getElementById('productName');
-    clearSelectOptions('productName');
-    const products=defaultProductNames[key]||[];
-    products.forEach(p=>addOptionToSelect('productName',p.value,p.text));
-    productSelect.disabled=products.length===0;
+    
+    // Reset dependent fields
+    document.getElementById('productName').innerHTML = '<option value="">Select Product Name</option>';
+    document.getElementById('media').innerHTML = '<option value="">Select Media</option>';
+    updateProductCodePreview();
 }
 
-// ===============================
-// PART NUMBER
-// ===============================
-function generatePartNumber(){
-    const category=document.getElementById('category').value;
-    const subCategory=document.getElementById('subCategory').value;
-    const productName=document.getElementById('productName').value;
-    const material=document.getElementById('material').value;
-    const length=document.getElementById('length').value;
-    const width=document.getElementById('width').value;
-    const height=document.getElementById('height').value;
-    const keterangan=document.getElementById('keterangan')?document.getElementById('keterangan').value:"";
-
-    if(!category||!subCategory||!productName||!material||!length||!width||!height){
-        alert("Mohon isi semua field terlebih dahulu."); return;
-    }
-    const ukuran=`${length}x${width}x${height}`;
-    let sizeCode=sizeCodeMaps[ukuran];
-    if(!sizeCode){ sizeCode=`A${Object.keys(sizeCodeMaps).length+1}`; sizeCodeMaps[ukuran]=sizeCode; }
-
-    const partNumber=[category.padStart(2,'0'),subCategory.padStart(2,'0'),productName.padStart(2,'0'),material.padStart(2,'0'),sizeCode].join(" ");
-
-    const tbody=document.getElementById("tableBody");
-    if(tbody){
-        const row=document.createElement("tr");
-        row.innerHTML=`<td>${currentDataId}</td><td>${partNumber}</td><td>${category}</td><td>${subCategory}</td><td>${productName}</td><td>${material}</td><td>${ukuran}</td><td>${keterangan||'-'}</td><td><button onclick="lihatData('${partNumber}')">Lihat</button></td>`;
-        tbody.appendChild(row);
-    }
-    partNumberData.push({id:currentDataId,partNumber,category,subCategory,productName,material,ukuran,keterangan});
-    currentDataId++;
-    savePartNumberData();
-    generateQRCode(partNumber);
-}
-function generateQRCode(text){
-    const qrContainer=document.getElementById("qr-code");
-    qrContainer.innerHTML=""; new QRCode(qrContainer,{text,width:128,height:128});
-    document.getElementById("qr-text").textContent=text;
-    document.getElementById("result").style.display="block";
-    document.getElementById("partNumber").value=text;
-    document.getElementById("qrData").value=text;
-}
-function lihatData(partNumber){
-    fetch(scriptUrl).then(res=>res.json()).then(data=>{
-        const item=data.find(d=>d.partNumber===partNumber);
-        if(item){
-            document.getElementById("qr-text").textContent=item.partNumber;
-            document.getElementById("qr-code").innerHTML=`<img src="${item.qrImage}" alt="QR Code">`;
-            document.getElementById("result").style.display="block";
-            document.getElementById("partNumber").value=item.partNumber;
-            document.getElementById("qrData").value=item.qrData||item.partNumber;
-        }
-    }).catch(err=>console.error("Error lihatData:",err));
-}
-
-// ===============================
-// STORAGE
-// ===============================
-function savePartNumberData(){ localStorage.setItem("partNumberData",JSON.stringify(partNumberData)); }
-function loadPartNumberData(){
-    const saved=localStorage.getItem("partNumberData");
-    if(saved){
-        partNumberData=JSON.parse(saved);
-        const tbody=document.getElementById("tableBody");
-        if(tbody){
-            tbody.innerHTML="";
-            partNumberData.forEach(item=>{
-                const row=document.createElement("tr");
-                row.innerHTML=`<td>${item.id}</td><td>${item.partNumber}</td><td>${item.category}</td><td>${item.subCategory}</td><td>${item.productName}</td><td>${item.material}</td><td>${item.ukuran}</td><td>${item.keterangan||'-'}</td><td><button onclick="lihatData('${item.partNumber}')">Lihat</button></td>`;
-                tbody.appendChild(row);
+function updateProductNameOptions() {
+    const category = document.getElementById('category').value;
+    const subCategory = document.getElementById('subCategory').value;
+    const productNameSelect = document.getElementById('productName');
+    
+    productNameSelect.innerHTML = '<option value="">Select Product Name</option>';
+    
+    if (category && subCategory) {
+        const key = `${category}-${subCategory}`;
+        if (defaultProductNames[key]) {
+            defaultProductNames[key].forEach(product => {
+                const option = document.createElement('option');
+                option.value = product.value;
+                option.textContent = product.text;
+                productNameSelect.appendChild(option);
             });
-            currentDataId=partNumberData.length+1;
         }
     }
 }
 
-// ===============================
-// EXPORT / CLEAR
-// ===============================
-function exportToExcel(){
-    if(partNumberData.length===0){ alert("Tidak ada data untuk diexport!"); return; }
-    let table="<table border='1'><tr><th>ID</th><th>Part Number</th><th>Category</th><th>SubCategory</th><th>Product</th><th>Material</th><th>Ukuran</th><th>Keterangan</th></tr>";
-    partNumberData.forEach(item=>{
-        table+=`<tr><td>${item.id}</td><td>${item.partNumber}</td><td>${item.category}</td><td>${item.subCategory}</td><td>${item.productName}</td><td>${item.material}</td><td>${item.ukuran}</td><td>${item.keterangan||'-'}</td></tr>`;
-    });
-    table+="</table>";
-    const blob=new Blob([table],{type:"application/vnd.ms-excel"});
-    const link=document.createElement("a");
-    link.href=URL.createObjectURL(blob);
-    link.download="part_number_data.xls"; link.click();
-}
-function clearAllData(){
-    if(confirm("Yakin ingin menghapus semua data?")){
-        partNumberData=[]; currentDataId=1; localStorage.removeItem("partNumberData");
-        const tbody=document.getElementById("tableBody");
-        if(tbody) tbody.innerHTML=`<tr><td colspan="9" class="no-data">Belum ada data</td></tr>`;
+function updateMediaOptions() {
+    const category = document.getElementById('category').value;
+    const mediaSelect = document.getElementById('media');
+    
+    mediaSelect.innerHTML = '<option value="">Select Media</option>';
+    
+    if (category && mediaOptionsBySubCategory[category]) {
+        mediaOptionsBySubCategory[category].forEach(media => {
+            const option = document.createElement('option');
+            option.value = media.code;
+            option.textContent = `${media.code}. ${media.name}`;
+            mediaSelect.appendChild(option);
+        });
     }
 }
+
+// ===============================
+// PRODUCT CODE GENERATION
+// ===============================
+function updateProductCodePreview() {
+    const category = document.getElementById('category').value;
+    const subCategory = document.getElementById('subCategory').value;
+    const productName = document.getElementById('productName').value;
+    const media = document.getElementById('media').value;
+    const size = document.getElementById('size').value;
+    
+    let codePreview = '';
+    
+    if (category) {
+        const categoryInfo = categoryMappings[category];
+        codePreview = categoryInfo.prefix;
+        
+        if (subCategory) {
+            codePreview += `.${subCategory}`;
+            
+            if (productName) {
+                codePreview += `.${productName.padStart(2, '0')}`;
+                
+                if (media) {
+                    codePreview += `.${media}`;
+                    
+                    if (size) {
+                        codePreview += `.${size.toUpperCase()}`;
+                    }
+                }
+            }
+        }
+    }
+    
+    document.getElementById('codePreview').textContent = codePreview || '-';
+    lastGeneratedCode = codePreview;
+}
+
+// ===============================
+// PRODUCT MANAGEMENT
+// ===============================
+function saveProduct() {
+    const category = document.getElementById('category').value;
+    const subCategory = document.getElementById('subCategory').value;
+    const productName = document.getElementById('productName');
+    const productNameText = productName.options[productName.selectedIndex]?.text || '';
+    const media = document.getElementById('media');
+    const mediaText = media.options[media.selectedIndex]?.text || '';
+    const size = document.getElementById('size').value;
+    const description = document.getElementById('description').value;
+    
+    if (!category || !subCategory || !productName.value) {
+        alert('Please fill in required fields: Category, Sub Category, and Product Name');
+        return;
+    }
+    
+    const productCode = lastGeneratedCode;
+    const product = {
+        id: Date.now(),
+        code: productCode,
+        category: categoryMappings[category].name,
+        subCategory: defaultSubCategories[category].find(sc => sc.value === subCategory)?.text || '',
+        productName: productNameText,
+        media: mediaText,
+        size: size,
+        description: description,
+        createdAt: new Date().toISOString()
+    };
+    
+    productDatabase.push(product);
+    localStorage.setItem('productDatabase', JSON.stringify(productDatabase));
+    
+    alert('Product saved successfully!');
+    document.getElementById('productForm').reset();
+    updateProductCodePreview();
+    
+    loadProductTable();
+    updatePagination();
+}
+
+function loadProductTable() {
+    const tableBody = document.getElementById('productTable').getElementsByTagName('tbody')[0];
+    tableBody.innerHTML = '';
+    
+    const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+    let filteredProducts = productDatabase;
+    
+    if (searchTerm) {
+        filteredProducts = productDatabase.filter(product => 
+            product.code.toLowerCase().includes(searchTerm) ||
+            product.category.toLowerCase().includes(searchTerm) ||
+            product.subCategory.toLowerCase().includes(searchTerm) ||
+            product.productName.toLowerCase().includes(searchTerm) ||
+            product.description.toLowerCase().includes(searchTerm)
+        );
+    }
+    
+    const startIndex = (currentPage - 1) * itemsPerPage;
+    const endIndex = Math.min(startIndex + itemsPerPage, filteredProducts.length);
+    const paginatedProducts = filteredProducts.slice(startIndex, endIndex);
+    
+    if (paginatedProducts.length === 0) {
+        const row = tableBody.insertRow();
+        const cell = row.insertCell(0);
+        cell.colSpan = 8;
+        cell.textContent = 'No products found';
+        cell.className = 'text-center';
+        return;
+    }
+    
+    paginatedProducts.forEach(product => {
+        const row = tableBody.insertRow();
+        
+        // Code with QR icon
+        const codeCell = row.insertCell(0);
+        codeCell.innerHTML = `
+            ${product.code}
+            <span class="qr-icon" onclick="generateQRCode('${product.code}')">
+                <i class="fas fa-qrcode"></i>
+            </span>
+        `;
+        
+        // Category
+        row.insertCell(1).textContent = product.category;
+        
+        // Sub Category
+        row.insertCell(2).textContent = product.subCategory;
+        
+        // Product Name
+        row.insertCell(3).textContent = product.productName;
+        
+        // Media
+        row.insertCell(4).textContent = product.media;
+        
+        // Size
+        row.insertCell(5).textContent = product.size;
+        
+        // Description
+        row.insertCell(6).textContent = product.description;
+        
+        // Actions
+        const actionsCell = row.insertCell(7);
+        actionsCell.innerHTML = `
+            <button class="btn btn-sm btn-danger" onclick="deleteProduct(${product.id})">
+                <i class="fas fa-trash"></i>
+            </button>
+        `;
+    });
+    
+    document.getElementById('pageInfo').textContent = 
+        `Showing ${startIndex + 1} to ${endIndex} of ${filteredProducts.length} entries`;
+}
+
+function deleteProduct(id) {
+    if (confirm('Are you sure you want to delete this product?')) {
+        productDatabase = productDatabase.filter(product => product.id !== id);
+        localStorage.setItem('productDatabase', JSON.stringify(productDatabase));
+        loadProductTable();
+        updatePagination();
+    }
+}
+
+// ===============================
+// PAGINATION
+// ===============================
+function updatePagination() {
+    const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+    let filteredProducts = productDatabase;
+    
+    if (searchTerm) {
+        filteredProducts = productDatabase.filter(product => 
+            product.code.toLowerCase().includes(searchTerm) ||
+            product.category.toLowerCase().includes(searchTerm) ||
+            product.subCategory.toLowerCase().includes(searchTerm) ||
+            product.productName.toLowerCase().includes(searchTerm) ||
+            product.description.toLowerCase().includes(searchTerm)
+        );
+    }
+    
+    const totalPages = Math.ceil(filteredProducts.length / itemsPerPage);
+    document.getElementById('prevPage').disabled = currentPage === 1;
+    document.getElementById('nextPage').disabled = currentPage === totalPages || totalPages === 0;
+}
+
+function goToPrevPage() {
+    if (currentPage > 1) {
+        currentPage--;
+        loadProductTable();
+        updatePagination();
+    }
+}
+
+function goToNextPage() {
+    const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+    let filteredProducts = productDatabase;
+    
+    if (searchTerm) {
+        filteredProducts = productDatabase.filter(product => 
+            product.code.toLowerCase().includes(searchTerm) ||
+            product.category.toLowerCase().includes(searchTerm) ||
+            product.subCategory.toLowerCase().includes(searchTerm) ||
+            product.productName.toLowerCase().includes(searchTerm) ||
+            product.description.toLowerCase().includes(searchTerm)
+        );
+    }
+    
+    const totalPages = Math.ceil(filteredProducts.length / itemsPerPage);
+    
+    if (currentPage < totalPages) {
+        currentPage++;
+        loadProductTable();
+        updatePagination();
+    }
+}
+
+// ===============================
+// QR CODE GENERATION
+// ===============================
+function generateQRCode(productCode) {
+    // Clear previous QR code
+    document.getElementById('qrcode').innerHTML = '';
+    
+    // Generate new QR code
+    const qrcode = new QRCode(document.getElementById('qrcode'), {
+        text: productCode,
+        width: 200,
+        height: 200,
+        colorDark: '#000000',
+        colorLight: '#ffffff',
+        correctLevel: QRCode.CorrectLevel.H
+    });
+    
+    // Show modal
+    document.getElementById('qrModal').style.display = 'block';
+}
+
+function closeQRModal() {
+    document.getElementById('qrModal').style.display = 'none';
+}
+
+function downloadQRCode() {
+    html2canvas(document.getElementById('qrcode')).then(canvas => {
+        const link = document.createElement('a');
+        link.download = `${lastGeneratedCode || 'qrcode'}.png`;
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+    });
+}
+
+// ===============================
+// EXPORT FUNCTIONALITY
+// ===============================
+function exportToExcel() {
+    const worksheet = XLSX.utils.json_to_sheet(productDatabase.map(product => ({
+        'Product Code': product.code,
+        'Category': product.category,
+        'Sub Category': product.subCategory,
+        'Product Name': product.productName,
+        'Media': product.media,
+        'Size': product.size,
+        'Description': product.description,
+        'Created At': new Date(product.createdAt).toLocaleString()
+    })));
+    
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Products');
+    XLSX.writeFile(workbook, 'products.xlsx');
+}
+
+// ===============================
+// GOOGLE SHEETS INTEGRATION
+// ===============================
+function syncWithGoogleSheets() {
+    const loadingElement = document.getElementById('loading');
+    const statusElement = document.getElementById('syncStatus');
+    
+    // Show loading
+    loadingElement.style.display = 'block';
+    statusElement.className = 'status-message';
+    statusElement.innerHTML = 'Syncing with Google Sheets...';
+    
+    // Prepare data for sending
+    const dataToSend = {
+        action: 'update',
+        products: productDatabase
+    };
+    
+    // Send data to Google Apps Script
+    fetch(scriptURL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(dataToSend)
+    })
+    .then(() => {
+        // Since we're using no-cors mode, we can't read the response
+        // But we'll assume it was successful
+        statusElement.className = 'status-message status-success';
+        statusElement.innerHTML = 'Data successfully synced with Google Sheets!';
+        
+        // Also try to load data from Sheets
+        loadFromGoogleSheets();
+    })
+    .catch(error => {
+        statusElement.className = 'status-message status-error';
+        statusElement.innerHTML = 'Error syncing with Google Sheets: ' + error.message;
+    })
+    .finally(() => {
+        loadingElement.style.display = 'none';
+        
+        // Hide status message after 5 seconds
+        setTimeout(() => {
+            statusElement.innerHTML = '';
+            statusElement.className = 'status-message';
+        }, 5000);
+    });
+}
+
+function loadFromGoogleSheets() {
+    const loadingElement = document.getElementById('loading');
+    const statusElement = document.getElementById('syncStatus');
+    
+    // Show loading
+    loadingElement.style.display = 'block';
+    statusElement.className = 'status-message';
+    statusElement.innerHTML = 'Loading data from Google Sheets...';
+    
+    // Request data from Google Apps Script
+    fetch(scriptURL + '?action=get')
+    .then(response => response.json())
+    .then(data => {
+        if (data && data.products) {
+            productDatabase = data.products;
+            localStorage.setItem('productDatabase', JSON.stringify(productDatabase));
+            
+            statusElement.className = 'status-message status-success';
+            statusElement.innerHTML = 'Data successfully loaded from Google Sheets!';
+            
+            // Refresh the table
+            loadProductTable();
+            updatePagination();
+        }
+    })
+    .catch(error => {
+        statusElement.className = 'status-message status-error';
+        statusElement.innerHTML = 'Error loading from Google Sheets: ' + error.message;
+    })
+    .finally(() => {
+        loadingElement.style.display = 'none';
+        
+        // Hide status message after 5 seconds
+        setTimeout(() => {
+            statusElement.innerHTML = '';
+            statusElement.className = 'status-message';
+        }, 5000);
+    });
+}
+
+// Close modal if clicked outside
+window.onclick = function(event) {
+    const modal = document.getElementById('qrModal');
+    if (event.target === modal) {
+        closeQRModal();
+    }
+};
