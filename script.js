@@ -270,34 +270,51 @@ const sheetMetalMaterials = [
 ];
 
 // Size code maps
-let sizeCodeMaps = {};
-let sizeCodeCounters = {};
+let sizeCodeMaps = JSON.parse(localStorage.getItem('sizeCodeMaps') || '{}');
+let sizeCodeCounters = JSON.parse(localStorage.getItem('sizeCodeCounters') || '{}');
 
 // Apps Script URL - Ganti dengan URL web app Apps Script kamu yang sebenarnya
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyr7-NH9tlr3L8nacXfsV70D3PjY5XlvyEGd5yB3Y6d0uf_vd6wb23I68oRZoWwwHC-yw/exec";
 
-// Function to fetch size counter from Sheets
-async function fetchSizeCounter(type) {
+// Part number data
+let partNumberData = JSON.parse(localStorage.getItem('partNumberData') || '[]');
+let currentDataId = partNumberData.length > 0 ? Math.max(...partNumberData.map(item => item.id)) + 1 : 0;
+
+// Fetch size counter with retry
+async function fetchSizeCounter(type, retries = 2) {
     try {
-        const response = await fetch(`${"https://script.google.com/macros/s/AKfycbyr7-NH9tlr3L8nacXfsV70D3PjY5XlvyEGd5yB3Y6d0uf_vd6wb23I68oRZoWwwHC-yw/exec"}?action=getCounter&type=${type}`);
+        const response = await fetch(`${APPS_SCRIPT_URL}?action=getCounter&type=${type}`);
         const data = await response.json();
+        if (data.error) throw new Error(data.error);
         return data.counter || 1;
     } catch (err) {
-        console.error('Error fetching counter:', err);
-        return 1;
+        console.warn(`Fetch counter failed for ${type}, retrying... (${retries} left):`, err);
+        if (retries > 0) return fetchSizeCounter(type, retries - 1);
+        return sizeCodeCounters[type] || 1; // Fallback ke localStorage
     }
 }
 
-// Function to update size counter in Sheets
-async function updateSizeCounter(type, newValue) {
+// Update size counter with retry
+async function updateSizeCounter(type, newValue, retries = 2) {
     try {
-        await fetch("https://script.google.com/macros/s/AKfycbyr7-NH9tlr3L8nacXfsV70D3PjY5XlvyEGd5yB3Y6d0uf_vd6wb23I68oRZoWwwHC-yw/exec", {
+        const response = await fetch(APPS_SCRIPT_URL, {
             method: 'POST',
             body: JSON.stringify({ action: 'updateCounter', type, value: newValue })
         });
+        const text = await response.text();
+        if (text.includes('Error')) throw new Error(text);
     } catch (err) {
-        console.error('Error updating counter:', err);
+        console.warn(`Update counter failed for ${type}, retrying... (${retries} left):`, err);
+        if (retries > 0) return updateSizeCounter(type, newValue, retries - 1);
     }
+    sizeCodeCounters[type] = newValue;
+    localStorage.setItem('sizeCodeCounters', JSON.stringify(sizeCodeCounters));
+}
+
+// Save maps to localStorage
+function saveSizeCodesToLocal() {
+    localStorage.setItem('sizeCodeMaps', JSON.stringify(sizeCodeMaps));
+    localStorage.setItem('sizeCodeCounters', JSON.stringify(sizeCodeCounters));
 }
 
 // Show login modal when page loads
@@ -305,6 +322,7 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('loginModal').style.display = 'block';
     loadSavedOptions();
     loadPartNumberData();
+    updateJakartaClock(); // Pastiin clock jalan
 });
 
 // Login validation
@@ -743,70 +761,14 @@ function updateMaterialOptions() {
     }
 }
 
-// Generate size code based on dimensions
-async function generateSizeCode() {
-    const category = document.getElementById('category').value;
-    const regularDimensions = document.getElementById('regularDimensions');
-    const cartridgeDimensions = document.getElementById('cartridgeDimensions');
-    const sizeCodeInput = document.getElementById('sizeCode');
-    const cartridgeSizeCodeInput = document.getElementById('cartridgeSizeCode');
-    
-    let type, key;
-    
-    if (category === '03') {
-        sizeCodeInput.value = document.getElementById('length').value || '';
-        return;
-    }
-    
-    if (cartridgeDimensions.style.display === 'block') {
-        const internalTop = document.getElementById('internalTop').value;
-        const internalBottom = document.getElementById('internalBottom').value;
-        const externalTop = document.getElementById('externalTop').value;
-        const externalBottom = document.getElementById('externalBottom').value;
-        const cartridgeLength = document.getElementById('cartridgeLength').value;
-        
-        if (internalTop && internalBottom && externalTop && externalBottom && cartridgeLength) {
-            key = `${internalTop}x${internalBottom}x${externalTop}x${externalBottom}x${cartridgeLength}`;
-            type = 'cartridge';
-        } else {
-            cartridgeSizeCodeInput.value = '';
-            return;
-        }
-    } else {
-        const length = document.getElementById('length').value;
-        const width = document.getElementById('width').value;
-        const height = document.getElementById('height').value;
-        
-        if (length && width && height) {
-            key = `${length}x${width}x${height}`;
-            type = category === '01' ? 'filter' : category === '02' ? 'sheetmetal' : category;
-        } else {
-            sizeCodeInput.value = '';
-            return;
-        }
-    }
-    
-    if (!sizeCodeMaps[type]) {
-        sizeCodeMaps[type] = {};
-    }
-    
-    if (!sizeCodeMaps[type][key]) {
-        sizeCodeCounters[type] = await fetchSizeCounter(type);
-        sizeCodeMaps[type][key] = sizeCodeCounters[type]++;
-        await updateSizeCounter(type, sizeCodeCounters[type]);
-    }
-    
-    const code = `A${String(sizeCodeMaps[type][key]).padStart(3, '0')}`;
-    
-    if (cartridgeDimensions.style.display === 'block') {
-        cartridgeSizeCodeInput.value = code;
-    } else {
-        sizeCodeInput.value = code;
-    }
-}
-
-// Generate the part number
+// Generate part number with debounce and duplicate check
 function generatePartNumber() {
+    const generateBtn = document.getElementById('generatePartNumberBtn');
+    if (!generateBtn || generateBtn.disabled) return;
+
+    generateBtn.disabled = true;
+    generateBtn.textContent = 'Generating...';
+
     const category = document.getElementById('category').value;
     const subCategory = document.getElementById('subCategory').value;
     const productName = document.getElementById('productName').value;
@@ -815,126 +777,96 @@ function generatePartNumber() {
     const cartridgeSizeCode = document.getElementById('cartridgeSizeCode').value;
     const price = document.getElementById('price').value;
     const pocketCount = document.getElementById('pocketCount').value;
-    
+
     if (!category) {
         alert('Please select a category');
+        generateBtn.disabled = false;
+        generateBtn.textContent = 'Generate Part Number';
         return;
     }
-    
+
     const categoryInfo = categoryMappings[category];
     if (!categoryInfo) {
         alert('Invalid category selected');
+        generateBtn.disabled = false;
+        generateBtn.textContent = 'Generate Part Number';
         return;
     }
-    
+
     let partNumber = '';
     let qrData = '';
-    
-    // Build the part number based on category
+
     if (category === '01') {
-        // Filter category
         if (!subCategory || !productName || !material || (!sizeCode && !cartridgeSizeCode)) {
             alert('Please fill in all required fields for Filter category');
+            generateBtn.disabled = false;
+            generateBtn.textContent = 'Generate Part Number';
             return;
         }
-        
+
         const sizeCodeToUse = cartridgeSizeCode || sizeCode;
-        
-        // Find material code
         const mediaOptions = mediaOptionsBySubCategory[subCategory] || [];
         const mediaInfo = mediaOptions.find(m => m.name === material);
         const mediaCode = mediaInfo ? mediaInfo.code : '00';
-        
+
         partNumber = `${categoryInfo.prefix}${subCategory}${productName.padStart(2, '0')}-${mediaCode}${sizeCodeToUse}`;
-        
-        // Build QR data
-        qrData = `Category: ${categoryInfo.name}\n`;
-        qrData += `Sub Category: ${document.getElementById('subCategory').options[document.getElementById('subCategory').selectedIndex].text}\n`;
-        qrData += `Product: ${document.getElementById('productName').options[document.getElementById('productName').selectedIndex].text}\n`;
-        qrData += `Material: ${material}\n`;
-        
-        // Add dimensions to QR data
-        if (cartridgeSizeCode) {
-            const internalTop = document.getElementById('internalTop').value;
-            const internalBottom = document.getElementById('internalBottom').value;
-            const externalTop = document.getElementById('externalTop').value;
-            const externalBottom = document.getElementById('externalBottom').value;
-            const cartridgeLength = document.getElementById('cartridgeLength').value;
-            qrData += `Dimensions: IT${internalTop}×IB${internalBottom}×ET${externalTop}×EB${externalBottom}×L${cartridgeLength}mm\n`;
-        } else {
-            const length = document.getElementById('length').value;
-            const width = document.getElementById('width').value;
-            const height = document.getElementById('height').value;
-            qrData += `Dimensions: ${length}×${width}×${height}mm\n`;
-        }
-        
-        // Add pocket count if applicable
-        const productNameText = document.getElementById('productName').options[document.getElementById('productName').selectedIndex].text;
-        if (productNameText.includes('Multi Pocket Filter') && pocketCount) {
+        qrData = `Category: ${categoryInfo.name}\nSub Category: ${document.getElementById('subCategory').options[document.getElementById('subCategory').selectedIndex].text}\nProduct: ${document.getElementById('productName').options[document.getElementById('productName').selectedIndex].text}\nMaterial: ${material}\n`;
+        const dimensions = cartridgeSizeCode ? `${document.getElementById('internalTop').value}×${document.getElementById('internalBottom').value}×${document.getElementById('externalTop').value}×${document.getElementById('externalBottom').value}×${document.getElementById('cartridgeLength').value}mm` : `${document.getElementById('length').value}×${document.getElementById('width').value}×${document.getElementById('height').value}mm`;
+        qrData += `Dimensions: ${dimensions}\n`;
+        if (document.getElementById('productName').options[document.getElementById('productName').selectedIndex].text.includes('Multi Pocket Filter') && pocketCount) {
             qrData += `Pockets: ${pocketCount}\n`;
         }
     } else if (category === '02') {
-        // Sheet metal category
         if (!subCategory || !productName || !material || !sizeCode) {
             alert('Please fill in all required fields for Sheetmetal category');
+            generateBtn.disabled = false;
+            generateBtn.textContent = 'Generate Part Number';
             return;
         }
-        
-        // For sheet metal, material is already a code
+
         partNumber = `${categoryInfo.prefix}${subCategory}${productName.padStart(2, '0')}-${material}${sizeCode}`;
-        
-        qrData = `Category: ${categoryInfo.name}\n`;
-        qrData += `Sub Category: ${document.getElementById('subCategory').options[document.getElementById('subCategory').selectedIndex].text}\n`;
-        qrData += `Product: ${document.getElementById('productName').options[document.getElementById('productName').selectedIndex].text}\n`;
-        
-        // Get material name for QR data
+        qrData = `Category: ${categoryInfo.name}\nSub Category: ${document.getElementById('subCategory').options[document.getElementById('subCategory').selectedIndex].text}\nProduct: ${document.getElementById('productName').options[document.getElementById('productName').selectedIndex].text}\n`;
         const materialInfo = sheetMetalMaterials.find(m => m.code === material);
         qrData += `Material: ${materialInfo ? materialInfo.name : material}\n`;
-        
-        const length = document.getElementById('length').value;
-        const width = document.getElementById('width').value;
-        const height = document.getElementById('height').value;
-        qrData += `Dimensions: ${length}×${width}×${height}mm\n`;
-    } else {
-        // Other categories
-        if (!sizeCode) {
-            alert('Please fill in all required fields');
+        const dimensions = `${document.getElementById('length').value}×${document.getElementById('width').value}×${document.getElementById('height').value}mm`;
+        qrData += `Dimensions: ${dimensions}\n`;
+    } else if (category === '03') {
+        if (!subCategory || !productName || !material || !sizeCode) {
+            alert('Please fill in all required fields for Raw Material category');
+            generateBtn.disabled = false;
+            generateBtn.textContent = 'Generate Part Number';
             return;
         }
-        
+
+        partNumber = `${categoryInfo.prefix}${subCategory}${productName.padStart(2, '0')}XX-${sizeCode}`;
+        qrData = `Category: ${categoryInfo.name}\nSub Category: ${document.getElementById('subCategory').options[document.getElementById('subCategory').selectedIndex].text}\nJenis Bahan Baku: ${document.getElementById('productName').options[document.getElementById('productName').selectedIndex].text}\nNama Bahan: ${material}\nNomor Order (PO): ${sizeCode}\n`;
+    } else {
         partNumber = `${categoryInfo.prefix}${subCategory ? subCategory.padStart(2, '0') : '00'}${productName ? productName.padStart(2, '0') : '00'}-${material ? 'XX' : 'XX'}${sizeCode}`;
-        
         qrData = `Category: ${categoryInfo.name}\n`;
-        if (subCategory) {
-            qrData += `Sub Category: ${document.getElementById('subCategory').options[document.getElementById('subCategory').selectedIndex].text}\n`;
-        }
-        if (productName) {
-            qrData += `Product: ${document.getElementById('productName').options[document.getElementById('productName').selectedIndex].text}\n`;
-        }
-        if (material) {
-            qrData += `Material: ${material}\n`;
-        }
-        
-        const length = document.getElementById('length').value;
-        const width = document.getElementById('width').value;
-        const height = document.getElementById('height').value;
-        qrData += `Dimensions: ${length}×${width}×${height}mm\n`;
+        if (subCategory) qrData += `Sub Category: ${document.getElementById('subCategory').options[document.getElementById('subCategory').selectedIndex].text}\n`;
+        if (productName) qrData += `Product: ${document.getElementById('productName').options[document.getElementById('productName').selectedIndex].text}\n`;
+        if (material) qrData += `Material: ${material}\n`;
+        const dimensions = `${document.getElementById('length').value}×${document.getElementById('width').value}×${document.getElementById('height').value}mm`;
+        qrData += `Dimensions: ${dimensions}\n`;
     }
-    
-    if (price) {
-        qrData += `Price: Rp ${parseInt(price).toLocaleString('id-ID')}`;
+
+    if (price) qrData += `Price: Rp ${parseInt(price).toLocaleString('id-ID')}`;
+
+    // Cek duplikat
+    if (partNumberData.some(item => item.partNumber === partNumber)) {
+        alert('Part number already exists!');
+        generateBtn.disabled = false;
+        generateBtn.textContent = 'Generate Part Number';
+        return;
     }
-    
-    // Display the results
+
     document.getElementById('partNumber').value = partNumber;
     document.getElementById('qrData').value = qrData;
     document.getElementById('qr-text').textContent = qrData;
     document.getElementById('result').style.display = 'block';
-    
-    // Generate QR code
+
     generateAndStoreQRCode(qrData);
-    
-    // Save to data storage
+
     const dataItem = {
         id: currentDataId++,
         partNumber: partNumber,
@@ -943,21 +875,46 @@ function generatePartNumber() {
         product: document.getElementById('productName').options[document.getElementById('productName').selectedIndex].text,
         material: material,
         size: sizeCode || cartridgeSizeCode,
+        dimensions: cartridgeSizeCode ? `${document.getElementById('internalTop').value}x${document.getElementById('internalBottom').value}x${document.getElementById('externalTop').value}x${document.getElementById('externalBottom').value}x${document.getElementById('cartridgeLength').value}` : `${document.getElementById('length').value}x${document.getElementById('width').value}x${document.getElementById('height').value}`,
         price: price ? parseInt(price) : 0,
         qrData: qrData,
         timestamp: new Date().toISOString()
     };
-    
+
     partNumberData.unshift(dataItem);
     savePartNumberDataToStorage();
     updateDataTable();
-    
-    // Scroll to result
+
+    fetch(APPS_SCRIPT_URL, {
+        method: "POST",
+        body: JSON.stringify(dataItem)
+    }).then(res => res.text())
+      .then(msg => console.log("Google Sheets response:", msg))
+      .catch(err => console.error("Error sending to Sheets:", err))
+      .finally(() => {
+          generateBtn.disabled = false;
+          generateBtn.textContent = 'Generate Part Number';
+      });
+
     document.getElementById('result').scrollIntoView({ behavior: 'smooth' });
 }
 
-// ... (lanjutan kode JS dari pesan sebelumnya, tapi aku potong karena terlalu panjang. Pastiin copy seluruh script dari pesan sebelumnya ke sini, termasuk function lain seperti copyToClipboard, saveQRCode, updateDataTable, dll.)
+// Event listeners with debounce
+document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('generateSizeBtn').addEventListener('click', generateSizeCode);
 
+    const generateBtn = document.querySelector('.generate-section button');
+    if (generateBtn) {
+        generateBtn.id = 'generatePartNumberBtn';
+        let isProcessing = false;
+        generateBtn.addEventListener('click', () => {
+            if (!isProcessing) {
+                isProcessing = true;
+                generatePartNumber();
+                setTimeout(() => { isProcessing = false; }, 2000); // Debounce 2 detik
+            }
+        });
+    }
 // Unit converter function
 function convertUnits() {
     const value = parseFloat(document.getElementById('convertValue').value);
@@ -987,3 +944,4 @@ function convertUnits() {
     document.getElementById('toCm').value = (mmValue / 10).toFixed(2) + ' cm';
     document.getElementById('toInch').value = (mmValue / 25.4).toFixed(2) + ' inch';
 }
+    
