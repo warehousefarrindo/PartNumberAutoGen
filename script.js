@@ -274,12 +274,12 @@ let sizeCodeMaps = {};
 let sizeCodeCounters = {};
 
 // Apps Script URL - Ganti dengan URL web app Apps Script kamu yang sebenarnya
-const APPS_SCRIPT_URL = "https://script.google.com/macros/s/[GANTI_DENGAN_ID_KAMU]/exec";
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyr7-NH9tlr3L8nacXfsV70D3PjY5XlvyEGd5yB3Y6d0uf_vd6wb23I68oRZoWwwHC-yw/exec";
 
 // Function to fetch size counter from Sheets
 async function fetchSizeCounter(type) {
     try {
-        const response = await fetch(`${APPS_SCRIPT_URL}?action=getCounter&type=${type}`);
+        const response = await fetch(`${"https://script.google.com/macros/s/AKfycbyr7-NH9tlr3L8nacXfsV70D3PjY5XlvyEGd5yB3Y6d0uf_vd6wb23I68oRZoWwwHC-yw/exec"}?action=getCounter&type=${type}`);
         const data = await response.json();
         return data.counter || 1;
     } catch (err) {
@@ -291,7 +291,7 @@ async function fetchSizeCounter(type) {
 // Function to update size counter in Sheets
 async function updateSizeCounter(type, newValue) {
     try {
-        await fetch(APPS_SCRIPT_URL, {
+        await fetch("https://script.google.com/macros/s/AKfycbyr7-NH9tlr3L8nacXfsV70D3PjY5XlvyEGd5yB3Y6d0uf_vd6wb23I68oRZoWwwHC-yw/exec", {
             method: 'POST',
             body: JSON.stringify({ action: 'updateCounter', type, value: newValue })
         });
