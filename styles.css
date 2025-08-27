@@ -1,5 +1,3 @@
-/* styles.css */
-
 /* Clock Styles */
 .jakarta-clock {
     position: fixed;
@@ -492,3 +490,4 @@ button:hover {
     margin-left: 5px;
     cursor: help;
 }
+
